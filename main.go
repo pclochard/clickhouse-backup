@@ -74,6 +74,30 @@ func main() {
 			),
 		},
 		{
+			Name:      "createfrom",
+			Usage:     "Create new backup from a date",
+			UsageText: "clickhouse-backup createfrom -b,--begin <YYYY-MM-DD> -e,--end <YYYY-MM-DD> [-t, --tables=<db>.<table>] <backup_name>",
+			Action: func(c *cli.Context) error {
+				return chbackup.CreateBackupFrom(*getConfig(c), c.Args().First(), c.String("t"), c.String("b"), c.String("e"))
+			},
+			Flags: append(cliapp.Flags,
+				cli.StringFlag{
+					Name:   "table, tables, t",
+					Hidden: false,
+				},
+				cli.StringFlag{
+					Name:   "begin, b",
+					Hidden: false,
+					Usage:  "Begin date",
+				},
+				cli.StringFlag{
+					Name:   "end, e",
+					Hidden: false,
+					Usage:  "End date",
+				},
+			),
+		},
+		{
 			Name:      "upload",
 			Usage:     "Upload backup to remote storage",
 			UsageText: "clickhouse-backup upload [--diff-from=<backup_name>] <backup_name>",
@@ -185,7 +209,7 @@ func main() {
 			UsageText:   "clickhouse-backup freeze [-t, --tables=<db>.<table>] <backup_name>",
 			Description: "Freeze tables",
 			Action: func(c *cli.Context) error {
-				return chbackup.Freeze(*getConfig(c), c.String("t"))
+				return chbackup.Freeze(*getConfig(c), c.String("t"),"", "")
 			},
 			Flags: append(cliapp.Flags,
 				cli.StringFlag{

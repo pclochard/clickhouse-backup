@@ -186,6 +186,48 @@ func (ch *ClickHouse) FreezeTable(table Table) error {
 	return nil
 }
 
+
+
+
+// FreezeTablePeriod - freeze partitions matching with the defined period
+func (ch *ClickHouse) FreezeTablePeriod(table Table, begin string, end string) error {
+	var partitions []struct {
+		PartitionID string `db:"partition_id"`
+		MinPartition string `db:"min_partition"`
+		MaxPartition string `db:"max_partition"`
+		IsTimePartition bool `db:"istimepartition"`
+	}
+	q := fmt.Sprintf("SELECT partition_id, min(min_period) as min_partition, max(max_period) as max_partition, istimepartition FROM (SELECT partition_id, if(toString(min_date) == '0000-00-00', if(toString(min_time) == '0000-00-00 00:00:00', '', substring(toString(min_time), 1, 10)), toString(min_date)) as min_period, if(toString(max_date) == '0000-00-00', if(toString(max_time) == '0000-00-00 00:00:00', '', substring(toString(max_time),1,10)), toString(max_date)) as max_period, if(length(min_period)>0, 1, 0) as istimepartition FROM `system`.`parts` WHERE active AND database='%s' AND table='%s' GROUP BY partition_id, min_period, max_period, istimepartition) GROUP BY partition_id, istimepartition ORDER BY partition_id", table.Database, table.Name)
+
+	if err := ch.conn.Select(&partitions, q); err != nil {
+		return fmt.Errorf("can't get partitions for \"%s.%s\" (period: %s to %s) with %v", table.Database, table.Name, begin, end, err)
+	}
+	log.Printf("Freeze '%v.%v'", table.Database, table.Name)
+
+
+	for _, item := range partitions {
+		log.Printf("  partition '%v'", item.PartitionID)
+		query := fmt.Sprintf("ALTER TABLE `%v`.`%v` FREEZE PARTITION ID '%v';", table.Database, table.Name, item.PartitionID)
+		if item.PartitionID == "all" {
+			query = fmt.Sprintf("ALTER TABLE `%v`.`%v` FREEZE PARTITION tuple();", table.Database, table.Name)
+		}
+		if item.IsTimePartition == false {
+			if _, err := ch.conn.Exec(query); err != nil {
+				return fmt.Errorf("can't freeze partition '%s' on '%s.%s' with: %v", item.PartitionID, table.Database, table.Name, err)
+			}
+		} else if (begin >= item.MinPartition && begin <= item.MaxPartition) || (end <=item.MaxPartition && end>=item.MinPartition) || (item.MinPartition >=begin && item.MaxPartition <=end) {
+				if _, err := ch.conn.Exec(query); err != nil {
+					return fmt.Errorf("can't freeze partition '%s' on '%s.%s' with: %v", item.PartitionID, table.Database, table.Name, err)
+				}
+			} // if (begin ....)
+	}
+	return nil
+} // FreezeTablePeriod
+
+
+
+
+
 // GetBackupTables - return list of backups of tables that can be restored
 func (ch *ClickHouse) GetBackupTables(backupName string) (map[string]BackupTable, error) {
 	dataPath, err := ch.GetDataPath()

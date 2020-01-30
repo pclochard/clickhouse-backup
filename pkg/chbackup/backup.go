@@ -305,7 +305,7 @@ func PrintRemoteBackups(config Config, format string) error {
 }
 
 // Freeze - freeze tables by tablePattern
-func Freeze(config Config, tablePattern string) error {
+func Freeze(config Config, tablePattern string, begin string, end string) error {
 	ch := &ClickHouse{
 		Config: &config.ClickHouse,
 	}
@@ -342,8 +342,15 @@ func Freeze(config Config, tablePattern string) error {
 			log.Printf("Skip `%s`.`%s`", table.Database, table.Name)
 			continue
 		}
-		if err := ch.FreezeTable(table); err != nil {
-			return err
+
+		if len(begin)==0 {
+			if err := ch.FreezeTable(table); err != nil {
+				return err
+			}
+		} else {
+			if err := ch.FreezeTablePeriod(table, begin, end); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -353,6 +360,77 @@ func Freeze(config Config, tablePattern string) error {
 func NewBackupName() string {
 	return time.Now().UTC().Format(BackupTimeFormat)
 }
+
+// CreateBackupFrom - create new backup of all tables matched by tablePattern and when the partitions are included in the date range
+// If backupName is empty string will use default backup name
+func CreateBackupFrom(config Config, backupName, tablePattern string, begindate string, enddate string) error {
+	if backupName == "" {
+		backupName = NewBackupName()
+	}
+	dataPath := getDataPath(config)
+	if dataPath == "" {
+		return ErrUnknownClickhouseDataPath
+	}
+	backupPath := path.Join(dataPath, "backup", backupName)
+	if _, err := os.Stat(backupPath); err == nil || !os.IsNotExist(err) {
+		return fmt.Errorf("can't create backup with '%s' already exists", backupPath)
+	}
+	if err := os.MkdirAll(backupPath, os.ModePerm); err != nil {
+		return fmt.Errorf("can't create backup with %v", err)
+	}
+
+	log.Printf("Create backup '%s (%s - %s)'", backupName, begindate, enddate)
+
+	if err := Freeze(config, tablePattern, begindate, enddate); err != nil {
+		return err
+	}
+	log.Println("Copy metadata")
+	schemaList, err := parseSchemaPattern(path.Join(dataPath, "metadata"), tablePattern)
+	if err != nil {
+		return err
+	}
+	for _, schema := range schemaList {
+		skip := false
+		for _, filter := range config.ClickHouse.SkipTables {
+			if matched, _ := filepath.Match(filter, fmt.Sprintf("%s.%s", schema.Database, schema.Table)); matched {
+				skip = true
+				break
+			}
+		}
+		if skip {
+			continue
+		}
+		relativePath := strings.Trim(strings.TrimPrefix(schema.Path, path.Join(dataPath, "metadata")), "/")
+		newPath := path.Join(backupPath, "metadata", relativePath)
+		if err := copyFile(schema.Path, newPath); err != nil {
+			return fmt.Errorf("can't backup metadata with %v", err)
+		}
+	}
+	log.Println("  Done.")
+
+	log.Println("Move shadow")
+	backupShadowDir := path.Join(backupPath, "shadow")
+	if err := os.MkdirAll(backupShadowDir, os.ModePerm); err != nil {
+		return err
+	}
+	shadowDir := path.Join(dataPath, "shadow")
+	if err := moveShadow(shadowDir, backupShadowDir); err != nil {
+		return err
+	}
+	if err := RemoveOldBackupsLocal(config); err != nil {
+		return err
+	}
+	log.Println("  Done.")
+	return nil
+} // CreateBackupFrom
+
+
+
+
+
+
+
+
 
 // CreateBackup - create new backup of all tables matched by tablePattern
 // If backupName is empty string will use default backup name
@@ -372,7 +450,7 @@ func CreateBackup(config Config, backupName, tablePattern string) error {
 		return fmt.Errorf("can't create backup with %v", err)
 	}
 	log.Printf("Create backup '%s'", backupName)
-	if err := Freeze(config, tablePattern); err != nil {
+	if err := Freeze(config, tablePattern, "", ""); err != nil {
 		return err
 	}
 	log.Println("Copy metadata")
